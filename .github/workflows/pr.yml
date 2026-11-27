@@ -1,0 +1,96 @@
+# Gate PR riusabile per le app Flutter. Contratto e esempio di chiamata: README.md.
+# `actions/checkout` qui dentro estrae il repo chiamante, non officina.
+name: Gate PR
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  controlli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Versione da .fvmrc, unica fonte: la action lo legge direttamente (jq '.flutter').
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - name: Codice generato committato
+        run: |
+          if [ ! -f tool/ci/codegen.sh ]; then
+            echo "::notice::tool/ci/codegen.sh assente: nessun codegen da verificare."
+            exit 0
+          fi
+          tool/ci/codegen.sh
+          # ponytail: git diff non vede i file generati nuovi e mai tracciati; passare a `git status --porcelain` se serve.
+          git diff --exit-code || {
+            echo "::error::Il codice generato non è committato: esegui tool/ci/codegen.sh e committa il risultato."
+            exit 1
+          }
+      - run: flutter analyze --fatal-infos
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - run: flutter pub get
+      - name: Test (senza golden)
+        run: |
+          if [ -f tool/ci/test.sh ]; then
+            tool/ci/test.sh --exclude-tags golden
+          else
+            flutter test --test-randomize-ordering-seed=random --exclude-tags golden
+          fi
+
+  # I PNG di riferimento nascono su macOS: su Linux i font si rasterizzano diversamente.
+  golden:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version-file: .fvmrc
+          cache: true
+      - run: flutter pub get
+      - name: Test golden
+        run: |
+          # `flutter test --tags golden` può fallire se nessun test porta il tag.
+          # ponytail: grep ingenuo sulla stringa 'golden' tra apici; basta un tag dichiarato altrove per sbagliarlo.
+          if ! grep -rqE "['\"]golden['\"]" test packages/*/test 2>/dev/null; then
+            echo "::notice::Nessun test con il tag golden: niente da confrontare."
+            exit 0
+          fi
+          if [ -f tool/ci/test.sh ]; then
+            tool/ci/test.sh --tags golden
+          else
+            flutter test --test-randomize-ordering-seed=random --tags golden
+          fi
+
+  sicurezza:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scorre i commit della PR
+      # La action diretta e non il workflow riusabile di osv-scanner: quello chiede
+      # `security-events: write`, che qui non c'è. Fallisce su ogni vulnerabilità nota del lockfile.
+      - uses: google/osv-scanner-action/osv-scanner-action@0e457b42d0120153c352875e9b758b1e5c58c7e5 # v2.7.1
+        with:
+          scan-args: |-
+            --lockfile=pubspec.lock
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: false # commentare la PR chiederebbe `pull-requests: write`
