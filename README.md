@@ -29,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read # richiesto da gitleaks nel job `sicurezza`
 
 jobs:
   gate:
@@ -48,3 +49,5 @@ jobs:
     steps:
       - run: jq -e 'all(.[]; .result == "success" or .result == "skipped")' <<< '${{ toJSON(needs) }}'
 ```
+
+Un workflow chiamato non può avere più permessi di quelli concessi dal chiamante: il chiamante deve concedere `contents: read` e `pull-requests: read`.
